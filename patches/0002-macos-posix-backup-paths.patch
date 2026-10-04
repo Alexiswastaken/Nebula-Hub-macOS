@@ -1,0 +1,29 @@
+diff --git a/src/shared/backup.ts b/src/shared/backup.ts
+index c9069eb..afcbaa0 100644
+--- a/src/shared/backup.ts
++++ b/src/shared/backup.ts
+@@ -26,7 +26,8 @@ export function backupFileName(prefix: string, now: Date): string {
+ /** `<Documents>\<folder>\<file>`: every part was validated with the catalog. */
+ export function backupPath(documentsDir: string, backup: PreOperationBackup, now: Date): string {
+   const base = documentsDir.replace(/[\\/]+$/, '');
+-  return `${base}\\${backup.documentsFolder}\\${backupFileName(backup.filePrefix, now)}`;
++  const sep = separatorOf(base);
++  return `${base}${sep}${backup.documentsFolder}${sep}${backupFileName(backup.filePrefix, now)}`;
+ }
+ 
+ /**
+@@ -36,7 +37,13 @@ export function backupPath(documentsDir: string, backup: PreOperationBackup, now
+ export function backupCopyPath(copyDir: string, backup: PreOperationBackup, file: string): string {
+   const base = copyDir.replace(/[\\/]+$/, '');
+   const name = file.split(/[\\/]/).pop() ?? file;
+-  return `${base}\\${backup.documentsFolder}\\${name}`;
++  const sep = separatorOf(base);
++  return `${base}${sep}${backup.documentsFolder}${sep}${name}`;
++}
++
++/** `\` for Windows paths (unchanged); `/` only for a POSIX path (macOS: `/Users/…`). */
++function separatorOf(base: string): string {
++  return base.startsWith('/') && !base.includes('\\') ? '/' : '\\';
+ }
+ 
+ /** Outcome of "Export my data" (a backup outside of any operation). */

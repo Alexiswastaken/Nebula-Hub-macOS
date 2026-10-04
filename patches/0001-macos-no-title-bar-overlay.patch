@@ -1,0 +1,14 @@
+diff --git a/src/electron/window.ts b/src/electron/window.ts
+index cf27add..ddd6278 100644
+--- a/src/electron/window.ts
++++ b/src/electron/window.ts
+@@ -52,7 +52,8 @@ function titleBarOverlay(settings: HubSettings): Electron.TitleBarOverlayOptions
+ export function applyWindowTheme(settings: HubSettings): void {
+   const window = getMainWindow();
+   if (window) {
+-    window.setTitleBarOverlay(titleBarOverlay(settings));
++    // macOS has no title bar overlay: setTitleBarOverlay does not exist there.
++    if (process.platform !== 'darwin') window.setTitleBarOverlay(titleBarOverlay(settings));
+     window.setBackgroundColor(chrome(settings).page);
+   }
+ }
