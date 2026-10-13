@@ -1,0 +1,470 @@
+diff --git a/src/electron/catalog/catalog-service.ts b/src/electron/catalog/catalog-service.ts
+index 349b1c2..9e024cc 100644
+--- a/src/electron/catalog/catalog-service.ts
++++ b/src/electron/catalog/catalog-service.ts
+@@ -9,6 +9,7 @@ import { compareSemver } from '../../shared/semver';
+ import { publicKeyFingerprint, verifyCatalogSignature } from '../catalog-signature';
+ import type { HubDatabase } from '../db';
+ import { NetError, type HttpGet } from '../net/http';
++import { catalogSources } from '../mac/platform';
+ 
+ /**
+  * Catalog acquisition (brief §6, rules R02/R03/R05).
+@@ -117,7 +118,7 @@ export class CatalogService {
+   }
+ 
+   private sources(): RemoteSource[] {
+-    return this.deps.sources ?? REMOTE_SOURCES;
++    return this.deps.sources ?? catalogSources(REMOTE_SOURCES);
+   }
+ 
+   private now(): Date {
+diff --git a/src/electron/mac/mac-installer.ts b/src/electron/mac/mac-installer.ts
+new file mode 100644
+index 0000000..490abc1
+--- /dev/null
++++ b/src/electron/mac/mac-installer.ts
+@@ -0,0 +1,124 @@
++import { execFile, spawn } from 'node:child_process';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import type { InstallerResult, InstallerRunner } from '../install/installer-runner';
++import { applicationDirs, bundleOf, NEBULA_BUNDLE, realExecutable, toReal } from './mac-paths';
++
++/**
++ * macOS build only (not part of the upstream Hub): the three things the install manager runs,
++ * done the macOS way, without a shell (R11).
++ *
++ * - A verified `.dmg` (size and SHA-512 already checked against the release feed, R02): mounted
++ *   read-only and hidden, its single family bundle copied next to the previous one, then swapped
++ *   in. The app's data (~/Library/Application Support) is never touched.
++ * - The virtual uninstaller of mac-probe.ts (`…\Uninstall <App>.exe`): removes that bundle, and
++ *   only a family bundle directly inside an application folder.
++ * - The app's own executable (its backup before an update or an uninstall): started as is.
++ */
++function run(command: string, args: string[], timeout: number): Promise<void> {
++  return new Promise((resolve, reject) => {
++    execFile(command, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (error) => (error ? reject(error) : resolve()));
++  });
++}
++
++async function writable(dir: string): Promise<boolean> {
++  try {
++    await fs.access(dir, fs.constants.W_OK);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++async function exists(target: string): Promise<boolean> {
++  try {
++    await fs.stat(target);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/** Where the bundle goes: where it already is, else /Applications, else ~/Applications. */
++async function destination(bundleName: string): Promise<string> {
++  const dirs = applicationDirs();
++  for (const dir of dirs) {
++    if ((await exists(path.join(dir, bundleName))) && (await writable(dir))) return path.join(dir, bundleName);
++  }
++  for (const dir of dirs) {
++    await fs.mkdir(dir, { recursive: true }).catch(() => undefined);
++    if (await writable(dir)) return path.join(dir, bundleName);
++  }
++  throw Object.assign(new Error('no writable application folder'), { code: 'EACCES' });
++}
++
++async function installDiskImage(image: string): Promise<void> {
++  const mount = await fs.mkdtemp(path.join(os.tmpdir(), 'nebula-hub-dmg-'));
++  let attached = false;
++  try {
++    await run('/usr/bin/hdiutil', ['attach', image, '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mount], 120_000);
++    attached = true;
++    const bundles = (await fs.readdir(mount)).filter((name) => NEBULA_BUNDLE.test(name));
++    if (bundles.length !== 1) throw Object.assign(new Error('expected exactly one Nebula bundle in the disk image'), { code: 'EBUNDLE' });
++    const target = await destination(bundles[0]);
++    const staging = `${target}.installing`;
++    await fs.rm(staging, { recursive: true, force: true });
++    // ditto keeps the bundle's symlinks, permissions and extended attributes.
++    await run('/usr/bin/ditto', [path.join(mount, bundles[0]), staging], 300_000);
++    await fs.rm(target, { recursive: true, force: true });
++    await fs.rename(staging, target);
++  } finally {
++    if (attached) await run('/usr/bin/hdiutil', ['detach', mount, '-force'], 60_000).catch(() => undefined);
++    await fs.rm(mount, { recursive: true, force: true }).catch(() => undefined);
++  }
++}
++
++async function removeBundle(realUninstaller: string): Promise<void> {
++  const bundle = bundleOf(realUninstaller);
++  if (!bundle) throw Object.assign(new Error('not a Nebula bundle'), { code: 'EBUNDLE' });
++  await fs.rm(bundle, { recursive: true, force: true });
++}
++
++function runExecutable(executable: string, args: readonly string[]): Promise<number | null> {
++  return new Promise((resolve, reject) => {
++    const child = spawn(executable, [...args], { shell: false, stdio: 'ignore' });
++    child.once('error', reject);
++    child.once('exit', (code) => resolve(code));
++  });
++}
++
++async function perform(installer: string, args: readonly string[]): Promise<InstallerResult> {
++  if (installer.toLowerCase().endsWith('.dmg') && path.isAbsolute(installer)) {
++    await installDiskImage(installer);
++    return { kind: 'exit', code: 0 };
++  }
++  const real = toReal(installer);
++  if (!real) throw Object.assign(new Error('unsupported installer'), { code: 'ENOTSUP' });
++  if (/^Uninstall .+\.exe$/i.test(path.basename(real))) {
++    await removeBundle(real);
++    return { kind: 'exit', code: 0 };
++  }
++  const executable = realExecutable(installer);
++  if (!executable || !bundleOf(executable)) throw Object.assign(new Error('not a Nebula bundle'), { code: 'EBUNDLE' });
++  return { kind: 'exit', code: await runExecutable(executable, args) };
++}
++
++export const macInstallerRunner: InstallerRunner = {
++  run(installer, args, timeoutMs) {
++    return new Promise((resolve, reject) => {
++      // Like the Windows runner: past the limit the Hub stops waiting, the work is not interrupted.
++      const timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
++      perform(installer, args).then(
++        (result) => {
++          clearTimeout(timer);
++          resolve(result);
++        },
++        (error) => {
++          clearTimeout(timer);
++          reject(error);
++        },
++      );
++    });
++  },
++};
+diff --git a/src/electron/mac/mac-paths.ts b/src/electron/mac/mac-paths.ts
+new file mode 100644
+index 0000000..eb6a6e6
+--- /dev/null
++++ b/src/electron/mac/mac-paths.ts
+@@ -0,0 +1,50 @@
++import os from 'node:os';
++import path from 'node:path';
++
++/**
++ * macOS build only (not part of the upstream Hub): the Hub's detection, launch, update and
++ * uninstall logic is written for Windows paths (`path.win32`, `C:\…\App.exe`, uninstall command
++ * lines). Rather than fork that logic, the macOS adapters present each installed bundle as a
++ * virtual Windows install on a drive that cannot exist on a Mac, and translate back at the edge:
++ *
++ *   /Applications/Nebula Clock.app/Contents/MacOS/Nebula Clock
++ *   <-> M:\Applications\Nebula Clock.app\Contents\MacOS\Nebula Clock.exe
++ */
++export const VIRTUAL_DRIVE = 'M:';
++
++/** Folders where a Nebula app may be installed, most common first. */
++export function applicationDirs(): string[] {
++  return ['/Applications', path.join(os.homedir(), 'Applications')];
++}
++
++/** Only bundles of the family are ever listed, replaced or removed. */
++export const NEBULA_BUNDLE = /^Nebula [A-Za-z0-9][A-Za-z0-9 ._-]{0,60}\.app$/;
++export const SAFE_PRODUCT_NAME = /^Nebula [A-Za-z0-9][A-Za-z0-9 ._-]{0,60}$/;
++
++export function toVirtual(realPath: string): string {
++  return `${VIRTUAL_DRIVE}${realPath.split('/').join('\\')}`;
++}
++
++/** The real path behind a virtual one, or null when the path is not virtual. */
++export function toReal(virtualPath: string): string | null {
++  if (!virtualPath.toUpperCase().startsWith(`${VIRTUAL_DRIVE}\\`) || virtualPath.includes('..')) return null;
++  return virtualPath.slice(VIRTUAL_DRIVE.length).split('\\').join('/');
++}
++
++/** `…/X.app/Contents/MacOS/X.exe` (virtual) -> the real executable, without the `.exe`. */
++export function realExecutable(virtualPath: string): string | null {
++  const real = toReal(virtualPath);
++  return real ? real.replace(/\.exe$/i, '') : null;
++}
++
++/**
++ * The bundle (`/Applications/Nebula X.app`) a real path belongs to, only when it is a family
++ * bundle directly inside one of the application folders. Null otherwise: nothing else is touched.
++ */
++export function bundleOf(realPath: string): string | null {
++  const index = realPath.indexOf('.app/');
++  const bundle = index < 0 ? (realPath.endsWith('.app') ? realPath : null) : realPath.slice(0, index + 4);
++  if (!bundle) return null;
++  const folder = path.dirname(bundle);
++  return applicationDirs().includes(folder) && NEBULA_BUNDLE.test(path.basename(bundle)) ? bundle : null;
++}
+diff --git a/src/electron/mac/mac-probe.ts b/src/electron/mac/mac-probe.ts
+new file mode 100644
+index 0000000..af909ff
+--- /dev/null
++++ b/src/electron/mac/mac-probe.ts
+@@ -0,0 +1,127 @@
++import { execFile } from 'node:child_process';
++import fs from 'node:fs/promises';
++import path from 'node:path';
++import type { SystemProbe } from '../apps/system-probe';
++import { applicationDirs, bundleOf, NEBULA_BUNDLE, realExecutable, SAFE_PRODUCT_NAME, toVirtual } from './mac-paths';
++
++/**
++ * macOS build only (not part of the upstream Hub): what `windowsProbe` asks Windows, asked to
++ * macOS instead, through execFile with argument arrays only (R11).
++ *
++ * The installed apps are the family bundles found in /Applications and ~/Applications. They are
++ * handed to the unchanged detection code as the text of a registry export (one Uninstall entry
++ * per bundle, on the virtual drive of mac-paths.ts), so matching, version reading, launch checks
++ * and the uninstall command validation all run exactly as on Windows.
++ */
++const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall';
++
++function run(command: string, args: string[], timeout: number): Promise<string> {
++  return new Promise((resolve, reject) => {
++    execFile(command, args, { timeout, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
++      if (error) reject(error);
++      else resolve(String(stdout));
++    });
++  });
++}
++
++/** A .reg string: backslashes and quotes escaped. */
++function regQuote(value: string): string {
++  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
++}
++
++interface Bundle {
++  name: string;
++  version: string;
++  executableDir: string;
++}
++
++async function familyBundles(): Promise<Bundle[]> {
++  const bundles: Bundle[] = [];
++  for (const dir of applicationDirs()) {
++    let names: string[];
++    try {
++      names = await fs.readdir(dir);
++    } catch {
++      continue;
++    }
++    for (const file of names.filter((name) => NEBULA_BUNDLE.test(name)).sort()) {
++      const name = file.slice(0, -'.app'.length);
++      const bundle = path.join(dir, file);
++      const executableDir = path.join(bundle, 'Contents', 'MacOS');
++      try {
++        if (!(await fs.stat(path.join(executableDir, name))).isFile()) continue;
++        const version = (await run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', path.join(bundle, 'Contents', 'Info.plist')], 5000)).trim();
++        bundles.push({ name, version, executableDir });
++      } catch {
++        // Not a complete bundle (a copy in progress, a broken install): not installed.
++      }
++    }
++  }
++  return bundles;
++}
++
++export const macProbe: SystemProbe = {
++  async exportRegistry(key) {
++    if (key !== UNINSTALL_KEY) return null;
++    const lines = ['Windows Registry Editor Version 5.00', ''];
++    for (const bundle of await familyBundles()) {
++      const uninstaller = toVirtual(path.join(bundle.executableDir, `Uninstall ${bundle.name}.exe`));
++      const keyName = `mac-${toVirtual(bundle.executableDir).replace(/[^A-Za-z0-9]+/g, '-')}`;
++      lines.push(
++        `[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${keyName}]`,
++        `"DisplayName"=${regQuote(`${bundle.name} ${bundle.version}`)}`,
++        `"DisplayVersion"=${regQuote(bundle.version)}`,
++        `"UninstallString"=${regQuote(`"${uninstaller}" /S`)}`,
++        '',
++      );
++    }
++    return lines.join('\r\n');
++  },
++
++  async runningProcesses() {
++    try {
++      const names = new Set<string>();
++      for (const line of (await run('/bin/ps', ['-axo', 'comm='], 10_000)).split('\n')) {
++        // The main executable of a bundle, not its helpers (…/Frameworks/… Helper.app/…).
++        const match = /\/([^/]+)\.app\/Contents\/MacOS\/([^/]+)$/.exec(line.trim());
++        if (match && match[1] === match[2] && !line.includes('/Frameworks/')) names.add(`${match[2].toLowerCase()}.exe`);
++      }
++      return names;
++    } catch {
++      return new Set();
++    }
++  },
++
++  async fileExists(filePath) {
++    const real = realExecutable(filePath);
++    if (!real) return false;
++    try {
++      return (await fs.stat(real)).isFile();
++    } catch {
++      return false;
++    }
++  },
++
++  async requestClose(exeName) {
++    // The polite request (R08): the same "quit" the user would choose in the app's own menu.
++    const name = exeName.replace(/\.exe$/i, '');
++    if (!SAFE_PRODUCT_NAME.test(name)) return;
++    await run('/usr/bin/osascript', ['-e', `tell application "${name}" to quit`], 10_000).catch(() => undefined);
++  },
++
++  async forceClose(exeName) {
++    const name = exeName.replace(/\.exe$/i, '');
++    if (!SAFE_PRODUCT_NAME.test(name)) return;
++    // The app and its helper processes (pkill reports an error when nothing matches).
++    await run('/usr/bin/pkill', ['-f', `/${name.replace(/[.]/g, '\\.')}\\.app/Contents/`], 10_000).catch(() => undefined);
++  },
++
++  async start(executable, _workingDirectory, args = []) {
++    const real = realExecutable(executable);
++    const bundle = real ? bundleOf(real) : null;
++    if (!bundle) throw new Error('ERR_NOT_A_NEBULA_BUNDLE');
++    // -n: a new instance, which hands its arguments to the running one (single-instance lock),
++    // like starting the .exe a second time on Windows.
++    await run('/usr/bin/open', ['-n', '-a', bundle, ...(args.length > 0 ? ['--args', ...args] : [])], 15_000);
++  },
++};
+diff --git a/src/electron/mac/platform.ts b/src/electron/mac/platform.ts
+new file mode 100644
+index 0000000..b48c562
+--- /dev/null
++++ b/src/electron/mac/platform.ts
+@@ -0,0 +1,42 @@
++import { windowsProbe } from '../apps/system-probe';
++import type { SystemProbe } from '../apps/system-probe';
++import { CATALOG_PUBLIC_KEY as UPSTREAM_CATALOG_PUBLIC_KEY } from '../catalog-key';
++import { launchDetached as launchDetachedOnWindows, spawnInstallerRunner, type InstallerRunner } from '../install/installer-runner';
++import { IS_MAC_BUILD } from '../../shared/mac-build';
++import { macInstallerRunner } from './mac-installer';
++import { macProbe } from './mac-probe';
++
++/**
++ * macOS build only (not part of the upstream Hub): the single place where the Hub picks its
++ * platform adapters. On Windows and Linux every export is exactly the upstream object.
++ *
++ * On macOS the apps come from the macOS builds of the family (Alexiswastaken/<App>-macOS), listed
++ * by a catalog of the same schema, signed with its own Ed25519 key (R03 unchanged: an invalid
++ * signature is refused). The upstream catalog, signed with the upstream key, lists Windows
++ * installers only and is not accepted by a macOS build.
++ */
++const MAC_CATALOG_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
++MCowBQYDK2VwAyEAIoZpWZRGbnu+G/I8YnLEdHkvMF7MDOC8hdxRnl7IQL4=
++-----END PUBLIC KEY-----
++`;
++
++const MAC_CATALOG_BASE = 'https://raw.githubusercontent.com/Alexiswastaken/Nebula-Hub-macOS/main/catalog/';
++
++export const systemProbe: SystemProbe = IS_MAC_BUILD ? macProbe : windowsProbe;
++
++export const installerRunner: InstallerRunner = IS_MAC_BUILD ? macInstallerRunner : spawnInstallerRunner;
++
++/** The Hub does not replace itself on macOS: its own macOS release is installed by hand. */
++export const launchDetached: typeof launchDetachedOnWindows = IS_MAC_BUILD
++  ? () => Promise.reject(Object.assign(new Error('the Hub does not update itself on macOS'), { code: 'ENOTSUP' }))
++  : launchDetachedOnWindows;
++
++export const CATALOG_PUBLIC_KEY = IS_MAC_BUILD ? MAC_CATALOG_PUBLIC_KEY : UPSTREAM_CATALOG_PUBLIC_KEY;
++
++/** Where the catalog is read: the macOS catalog on a Mac, the upstream sources elsewhere. */
++export function catalogSources<T extends { id: 'raw' | 'release'; catalogUrl: string; signatureUrl: string }>(upstream: T[]): T[] {
++  if (!IS_MAC_BUILD) return upstream;
++  return upstream
++    .filter((source) => source.id === 'raw')
++    .map((source) => ({ ...source, catalogUrl: `${MAC_CATALOG_BASE}nebula-catalog.json`, signatureUrl: `${MAC_CATALOG_BASE}nebula-catalog.json.sig` }));
++}
+diff --git a/src/electron/main.ts b/src/electron/main.ts
+index f0f39a5..844347d 100644
+--- a/src/electron/main.ts
++++ b/src/electron/main.ts
+@@ -11,13 +11,13 @@ import type { HubSettings } from '../shared/settings';
+ import { isSafeExternalUrl } from '../shared/url';
+ import { backupArgument, MAX_BACKUP_BYTES, validateBackup, type ImportDataResult, type SaveInstallerResult } from '../shared/backup';
+ import { InstalledAppsService } from './apps/installed-apps';
+-import { windowsProbe } from './apps/system-probe';
++import { systemProbe as windowsProbe } from './mac/platform';
+ import { closeNebulaApps } from './apps/quit-nebula';
+ import { ExtensionKeeper } from './apps/extension-keeper';
+ import { isExtension } from '../shared/extensions';
+ import { isRunning } from '../shared/tasklist';
+ import { CatalogService } from './catalog/catalog-service';
+-import { CATALOG_PUBLIC_KEY } from './catalog-key';
++import { CATALOG_PUBLIC_KEY } from './mac/platform';
+ import { HubDatabase } from './db';
+ import { LinkHub } from './link/link-hub';
+ import { defaultSessionDir, userPipe } from './link/session';
+@@ -26,7 +26,7 @@ import { InstallHistory } from './install/history';
+ import { HubUpdater } from './install/hub-updater';
+ import { InstallManager } from './install/install-manager';
+ import { saveInstaller } from './install/save-installer';
+-import { launchDetached, spawnInstallerRunner } from './install/installer-runner';
++import { launchDetached, installerRunner as spawnInstallerRunner } from './mac/platform';
+ import { downloadFile, verifyFile } from './net/download';
+ import { httpGet } from './net/http';
+ import { showWindowsNotification } from './notifier';
+diff --git a/src/shared/installer-args.ts b/src/shared/installer-args.ts
+index 64625ea..5849a41 100644
+--- a/src/shared/installer-args.ts
++++ b/src/shared/installer-args.ts
+@@ -1,4 +1,5 @@
+ import { isSafeFileName } from './latest-yml';
++import { IS_MAC_BUILD, isMacInstallerName } from './mac-build';
+ import type { OperationKind } from './install-state';
+ 
+ /**
+@@ -58,5 +59,5 @@ export function installTarget(baseDirectory: string, productName: string): strin
+ 
+ /** The installer file name from latest.yml, re-checked before it becomes a path on disk (R11). */
+ export function isSafeInstallerName(value: unknown): value is string {
+-  return isSafeFileName(value) && value.toLowerCase().endsWith('.exe');
++  return isSafeFileName(value) && (IS_MAC_BUILD ? isMacInstallerName(value) : value.toLowerCase().endsWith('.exe'));
+ }
+diff --git a/src/shared/latest-yml.ts b/src/shared/latest-yml.ts
+index bee03d5..d33bfd5 100644
+--- a/src/shared/latest-yml.ts
++++ b/src/shared/latest-yml.ts
+@@ -1,3 +1,4 @@
++import { IS_MAC_BUILD, isMacInstallerName } from './mac-build';
+ import { isSemver } from './semver';
+ 
+ /**
+@@ -113,7 +114,7 @@ export function parseUpdateFeed(text: string): UpdateFeed {
+  * top-level `path`/`sha512` when they are present.
+  */
+ export function selectInstaller(feed: UpdateFeed, assetNames: readonly string[]): FeedFile {
+-  const candidates = feed.files.filter((file) => file.url.toLowerCase().endsWith('.exe') && assetNames.includes(file.url));
++  const candidates = feed.files.filter((file) => (IS_MAC_BUILD ? isMacInstallerName(file.url) : file.url.toLowerCase().endsWith('.exe')) && assetNames.includes(file.url));
+   if (candidates.length !== 1) {
+     throw new FeedError(candidates.length === 0 ? 'ERR_FEED_ASSET_MISSING' : 'ERR_FEED_AMBIGUOUS');
+   }
+diff --git a/src/shared/mac-build.ts b/src/shared/mac-build.ts
+new file mode 100644
+index 0000000..8f50825
+--- /dev/null
++++ b/src/shared/mac-build.ts
+@@ -0,0 +1,12 @@
++/**
++ * macOS build only (not part of the upstream Hub): true in the main process of a Hub running on
++ * macOS. False on Windows and Linux, in the renderer (no `process` there), and under Jest, whose
++ * suites describe the Windows behaviour whatever machine runs them.
++ */
++export const IS_MAC_BUILD = typeof process !== 'undefined' && process.platform === 'darwin' && process.env.JEST_WORKER_ID === undefined;
++
++/** The macOS installer of a release for this Mac: the `.dmg` built for its processor. */
++export function isMacInstallerName(name: string): boolean {
++  const lower = name.toLowerCase();
++  return lower.endsWith('.dmg') && lower.includes(`-${process.arch}.`);
++}

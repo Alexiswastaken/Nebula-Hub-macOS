@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-10-13T07:57:28Z",
+  "apps": [
+    {
+      "id": "nebula.finterest",
+      "name": "Nebula Finterest",
+      "tagline": {
+        "fr": "Votre budget, simplement",
+        "en": "Your budget, simply"
+      },
+      "description": {
+        "fr": "Budget mensuel personnel, 100 % local et hors ligne : plusieurs comptes protégés par un code, calendrier des prélèvements et des achats, prêts, calculatrice, personnalisation complète et sauvegarde automatique avant désinstallation. Avec Nebula News, une carte « Apprendre » propose les articles de finance du jour, sans jamais rien envoyer de votre budget. Explicitement pas une application bancaire : aucune banque, aucun marché, aucun compte en ligne.",
+        "en": "A personal monthly budget, 100% local and offline: several PIN-protected accounts, a calendar of charges and purchases, loans, a calculator, full personalization and an automatic backup before uninstalling. With Nebula News, a “Learn” card shows today’s finance articles, without ever sending anything from your budget. Explicitly not a banking app: no bank, no market data, no online account."
+      },
+      "category": "finance",
+      "status": "stable",
+      "icon": "icons/finterest.svg",
+      "screenshots": [
+        "screenshots/finterest-0139-dashboard.png",
+        "screenshots/finterest-0139-calendar.png"
+      ],
+      "source": {
+        "provider": "github",
+        "owner": "Alexiswastaken",
+        "repo": "Nebula-Finterest-macOS"
+      },
+      "windows": {
+        "productName": "Nebula Finterest",
+        "appId": "com.finterest.desktop",
+        "exeName": "Nebula Finterest.exe",
+        "installScope": "user",
+        "updateFeed": "latest-mac.yml",
+        "silentArgs": [
+          "/S"
+        ],
+        "selfUpdates": false,
+        "preOperationBackup": {
+          "argument": "--backup-before-uninstall=",
+          "documentsFolder": "Nebula Finterest",
+          "filePrefix": "finterest-store-backup",
+          "format": "finterest-backup-v1",
+          "importArgument": "--import-backup=",
+          "sealedSince": "0.1.45"
+        }
+      },
+      "dataNotice": {
+        "fr": "Vos comptes sont sauvegardés dans Documents/Nebula Finterest avant toute mise à jour, réparation ou désinstallation. Sur macOS, désinstaller retire l’application ; ses données restent sur ce Mac.",
+        "en": "Your accounts are backed up to Documents/Nebula Finterest before any update, repair or uninstall. On macOS, uninstalling removes the application; its data stays on this Mac."
+      },
+      "link": {
+        "manifest": "nebula.app.json",
+        "minProtocol": 1
+      },
+      "minHubVersion": "0.2.11"
+    },
+    {
+      "id": "nebula.clock",
+      "name": "Nebula Clock",
+      "tagline": {
+        "fr": "Le Pomodoro sans compte",
+        "en": "Pomodoro, no account"
+      },
+      "description": {
+        "fr": "Minuteur Pomodoro avec tâches, statistiques, séries, badges et ambiances sonores, mode compact toujours visible et zone de notification. Toutes les données restent sur l’appareil.",
+        "en": "A Pomodoro timer with tasks, statistics, streaks, badges and ambient sounds, an always-on-top compact mode and a tray icon. All data stays on the device."
+      },
+      "category": "productivity",
+      "status": "stable",
+      "icon": "icons/clock.svg",
+      "screenshots": [],
+      "source": {
+        "provider": "github",
+        "owner": "Alexiswastaken",
+        "repo": "nebula-clock-macOS"
+      },
+      "windows": {
+        "productName": "Nebula Clock",
+        "appId": "clock.nebula.desktop",
+        "exeName": "Nebula Clock.exe",
+        "installScope": "either",
+        "updateFeed": "latest-mac.yml",
+        "silentArgs": [
+          "/S"
+        ],
+        "selfUpdates": false
+      },
+      "dataNotice": {
+        "fr": "Sur macOS, désinstaller retire l’application ; ses données restent sur ce Mac.",
+        "en": "On macOS, uninstalling removes the application; its data stays on this Mac."
+      },
+      "link": {
+        "manifest": "nebula.app.json",
+        "minProtocol": 1
+      },
+      "minHubVersion": "0.1.0"
+    },
+    {
+      "id": "nebula.news",
+      "name": "Nebula News",
+      "tagline": {
+        "fr": "Développement personnel, finance et tech, chaque jour",
+        "en": "Personal growth, finance and tech, every day"
+      },
+      "description": {
+        "fr": "Un briefing quotidien sur trois thèmes : développement personnel et organisation, finance et éducation financière, tech et informatique. Les articles viennent de flux RSS français et anglais, résumés et classés. Chaque thème nourrit une app de la famille : Nebula Clock pendant les pauses, Nebula Finterest et l’accueil de Nebula Hub. Fonctionne sans aucune clé d’API.",
+        "en": "A daily briefing on three themes: personal growth and organization, finance and financial literacy, tech and computing. Articles come from French and English RSS feeds, summarized and ranked. Each theme feeds a family app: Nebula Clock during breaks, Nebula Finterest and the Nebula Hub Home. Works without any API key."
+      },
+      "category": "info",
+      "status": "stable",
+      "icon": "icons/news.svg",
+      "screenshots": [],
+      "source": {
+        "provider": "github",
+        "owner": "Alexiswastaken",
+        "repo": "Nebula-News-macOS"
+      },
+      "windows": {
+        "productName": "Nebula News",
+        "appId": "news.nebula.desktop",
+        "exeName": "Nebula News.exe",
+        "installScope": "either",
+        "updateFeed": "latest-mac.yml",
+        "silentArgs": [
+          "/S"
+        ],
+        "selfUpdates": false
+      },
+      "dataNotice": {
+        "fr": "Sur macOS, désinstaller retire l’application ; ses données restent sur ce Mac.",
+        "en": "On macOS, uninstalling removes the application; its data stays on this Mac."
+      },
+      "link": {
+        "manifest": "nebula.app.json",
+        "minProtocol": 1
+      },
+      "minHubVersion": "0.2.7"
+    }
+  ]
+}
